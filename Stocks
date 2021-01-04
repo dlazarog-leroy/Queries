@@ -1,0 +1,68 @@
+DECLARE @FECHA as DATE
+SET @FECHA = '20210101'
+
+SELECT 
+@FECHA AS Fecha, T20.[Item No_], T20.[Lot No_], T20.Descript, T20.[Location Code], T20.[Bin Code], T20.[Expiration Date], T20.Stock, T20.[Unit of Measure Code],
+
+-- Calcula media de coste de producto y lo mete dentro de una columna llamada Avg_Cost.
+
+(SELECT 
+CASE
+       WHEN SUM(T2.Quantity) > 0
+       THEN
+                    CASE WHEN SUM(T2.[Cost Amount (Actual)] + T2.[Cost Amount (Expected)]) > 0
+                    THEN SUM(T2.[Cost Amount (Actual)] + T2.[Cost Amount (Expected)]) / SUM(T2.Quantity)
+                    
+                    ELSE 0
+                    END
+       ELSE
+                    CASE WHEN SUM(T2.[Cost Amount (Actual)] + T2.[Cost Amount (Expected)]) > 0
+                    THEN 0
+                    
+                    ELSE (SELECT TOP 1 (T3.[Cost Amount (Actual)] + T3.[Cost Amount (Expected)]) / T3.Quantity FROM lps.Value_Item_Ledger_Entry T3 WHERE T3.[Item No_] = T20.[Item No_] AND T3.[Lot No_] = T20.[Lot No_] AND T3.[Location Code] = T20.[Location Code] ORDER BY [Entry No_])
+                    END
+
+END
+FROM lps.Value_Item_Ledger_Entry T2
+WHERE T2.[Item No_] = T20.[Item No_] AND T2.[Lot No_] = T20.[Lot No_] AND T2.[Location Code] = T20.[Location Code] AND (T2.[Entry Type] = 0 OR T2.[Entry Type] = 4 OR T2.[Entry Type] = 6) AND T2.[Posting Date] < @FECHA) Avg_Cost
+
+, 'EUR' Currency 
+,
+	( SELECT TOP 1 T12.[Posting Date]
+	  FROM [nav].[Item_Ledger_Entry] T12
+	  WHERE T12.[Item No_] = T20.[Item No_] AND T12.[Lot No_] = T20.[Lot No_] AND T12.[Location Code] = T20.[Location Code]
+	  ORDER BY T12.[Posting Date]) Since
+FROM 
+	-- Tabla de datos de donde sacaremos el Select, la denominamos T20.
+	(
+	SELECT 
+	MOVS.[Item No_], MOVS.[Lot No_], MAX(MOVS.Descript) Descript, MOVS.[Location Code], MOVS.[Bin Code], MAX(MOVS.[Expiration Date]) [Expiration Date], SUM(MOVS.stock) Stock, MOVS.[Unit of Measure Code]
+	FROM
+	(
+		SELECT
+		T0.[Registering Date] [Posting Date],
+		T0.[Item No_], T0.[Lot No_], T0.[Item Description] Descript, T0.[Location Code], T0.[Bin Code], 
+		-- Condicional cuando la la fecha es X conviertela en Null en caso contrario manten la fecha de expiración.
+		CASE WHEN T0.[Expiration Date] = '1753-01-01 00:00:00.000' THEN NULL
+			   ELSE T0.[Expiration Date]
+			   END [Expiration Date],
+			   
+			   T0.Quantity Stock, T0.[Unit of Measure Code]
+		FROM [nav].[Warehouse_Entry] T0
+
+	UNION ALL
+	-- Nueva tabla de datos con relacionada a la de arriba. 
+		SELECT T10.[Posting Date], T10.[Item No_], T10.[Lot No_], T10.[Item Description] Descript, T10.[Location Code], NULL [Bin Code], 
+
+		CASE WHEN T10.[Expiration Date] = '1753-01-01 00:00:00.000' THEN NULL
+			   ELSE T10.[Expiration Date]
+			   END [Expiration Date], T10.Quantity Stock, T10.[Base Unit of Measure]
+		FROM lps.Value_Item_Ledger_Entry T10 WHERE [Location Code]<>'' AND [Location Code] NOT IN (SELECT DISTINCT([Location Code]) FROM nav.Warehouse_Entry WHERE [Location Code] <> '')
+		) MOVS
+		WHERE 
+		MOVS.[Posting Date] < @FECHA
+
+		GROUP BY MOVS.[Item No_], MOVS.[Lot No_],  MOVS.[Location Code], MOVS.[Bin Code], MOVS.[Unit of Measure Code]
+		)T20
+WHERE T20.Stock > 0
+
